@@ -2,14 +2,15 @@
 # Naval Fluid Mechanics — Buoyancy & Stability Simulator
 # Streamlit Web Application
 # Author: Ilya Kavalchuk — Swinburne University of Technology
-# Version: 4.0 (Academic Integrity + Geometry + GM Stability + Water Scenarios)
+# Version: 4.1 (Performance-optimised with st.cache_data)
 # ==============================================================================
 
 import streamlit as st
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")          # non-interactive backend — required on cloud
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.patches import FancyArrowPatch
 import hashlib
 import random
 import pandas as pd
@@ -29,149 +30,119 @@ st.set_page_config(
 # ==============================================================================
 st.markdown("""
 <style>
-    .main { background-color: #0a1628; }
     .stApp { background-color: #0a1628; }
     h1, h2, h3 { color: #a8dadc; }
-    .metric-card {
-        background: #1d3557;
-        border-radius: 10px;
-        padding: 12px 16px;
-        margin: 4px 0;
-        border-left: 4px solid #457b9d;
-    }
-    .metric-value { color: #a8dadc; font-size: 1.1em; font-weight: bold; }
-    .metric-label { color: #ccc; font-size: 0.85em; }
-    .status-float  { background:#1a4731; border:2px solid #2ecc71; border-radius:8px; padding:10px; text-align:center; color:#2ecc71; font-size:1.3em; font-weight:bold; }
-    .status-neutral{ background:#4a3a00; border:2px solid #f1c40f; border-radius:8px; padding:10px; text-align:center; color:#f1c40f; font-size:1.3em; font-weight:bold; }
-    .status-sink   { background:#4a0000; border:2px solid #e63946; border-radius:8px; padding:10px; text-align:center; color:#e63946; font-size:1.3em; font-weight:bold; }
-    .integrity-box { background:#1a2a1a; border:2px solid #2ecc71; border-radius:8px; padding:12px; margin:8px 0; }
-    .theory-box    { background:#1d3557; border-radius:8px; padding:14px; margin:6px 0; border-left:4px solid #e63946; }
-    .warning-box   { background:#3a1a00; border:2px solid #e67e22; border-radius:6px; padding:10px; color:#e67e22; }
-    .stSelectbox label, .stNumberInput label, .stTextInput label { color: #a8dadc !important; font-weight: 600; }
-    div[data-testid="metric-container"] { background:#1d3557; border-radius:8px; padding:8px; border-left:4px solid #457b9d; }
+    .status-float   { background:#1a4731; border:2px solid #2ecc71; border-radius:8px;
+                      padding:10px; text-align:center; color:#2ecc71;
+                      font-size:1.3em; font-weight:bold; }
+    .status-neutral { background:#4a3a00; border:2px solid #f1c40f; border-radius:8px;
+                      padding:10px; text-align:center; color:#f1c40f;
+                      font-size:1.3em; font-weight:bold; }
+    .status-sink    { background:#4a0000; border:2px solid #e63946; border-radius:8px;
+                      padding:10px; text-align:center; color:#e63946;
+                      font-size:1.3em; font-weight:bold; }
+    .integrity-box  { background:#1a2a1a; border:2px solid #2ecc71;
+                      border-radius:8px; padding:12px; margin:8px 0; }
+    div[data-testid="metric-container"] {
+                      background:#1d3557; border-radius:8px; padding:8px;
+                      border-left:4px solid #457b9d; }
     div[data-testid="metric-container"] label { color: #a8dadc !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# CONSTANTS — WATER ENVIRONMENTS
+# CONSTANTS
 # ==============================================================================
 WATER_TYPES = {
-    "🌊 Open Ocean (Seawater)":        {"rho": 1025, "desc": "Standard seawater — open ocean, typical naval operations"},
-    "🏖️ Coastal / Harbour Water":      {"rho": 1015, "desc": "Slightly diluted by freshwater runoff near ports and estuaries"},
-    "🌿 Brackish Water (Estuary)":      {"rho": 1005, "desc": "Mixed fresh/saltwater — river mouths, Baltic Sea, estuaries"},
-    "🏞️ Freshwater (River / Lake)":    {"rho": 1000, "desc": "Rivers, lakes, inland waterways — lowest buoyancy environment"},
-    "🧪 Dense Brine (Dead Sea / Salt Lake)": {"rho": 1240, "desc": "Hypersaline water — extreme buoyancy, rarely navigated by ships"},
+    "🌊 Open Ocean (Seawater)":              {"rho": 1025, "desc": "Standard seawater — open ocean, typical naval operations"},
+    "🏖️ Coastal / Harbour Water":            {"rho": 1015, "desc": "Slightly diluted near ports and estuaries"},
+    "🌿 Brackish Water (Estuary)":           {"rho": 1005, "desc": "Mixed fresh/saltwater — river mouths, Baltic Sea"},
+    "🏞️ Freshwater (River / Lake)":         {"rho": 1000, "desc": "Rivers, lakes, inland waterways — lowest buoyancy"},
+    "🧪 Dense Brine (Dead Sea / Salt Lake)": {"rho": 1240, "desc": "Hypersaline — extreme buoyancy, rarely navigated"},
 }
 
 MATERIAL_PRESETS = {
-    "Custom (manual entry)":   None,
-    "Mild Steel":              7850,
-    "High-Strength Steel":     7950,
-    "Aluminium Alloy":         2700,
-    "GRP / Fibreglass":        1600,
-    "Carbon Fibre Composite":  1550,
-    "Timber (Teak)":           900,
-    "Timber (Pine)":           530,
-    "Reinforced Concrete":     2400,
+    "Custom (manual entry)":  None,
+    "Mild Steel":             7850,
+    "High-Strength Steel":    7950,
+    "Aluminium Alloy":        2700,
+    "GRP / Fibreglass":       1600,
+    "Carbon Fibre Composite": 1550,
+    "Timber (Teak)":          900,
+    "Timber (Pine)":          530,
+    "Reinforced Concrete":    2400,
 }
+
+MATERIAL_NAMES = {7850:"Mild Steel", 7950:"High-Strength Steel",
+                  2700:"Aluminium Alloy", 1600:"GRP / Fibreglass"}
 
 G = 9.81  # m/s²
 
 # ==============================================================================
 # ACADEMIC INTEGRITY — STUDENT ID SEED
 # ==============================================================================
+@st.cache_data(show_spinner=False)
 def generate_student_params(student_id: str) -> dict:
-    """
-    Deterministically generate unique ship parameters from Student ID.
-    Same ID → same parameters (reproducible/auditable).
-    Different IDs → different parameters (prevents copying).
-    """
-    h = int(hashlib.sha256(student_id.strip().encode()).hexdigest(), 16)
+    """Deterministic unique ship parameters from Student ID (SHA-256 seeded)."""
+    h   = int(hashlib.sha256(student_id.strip().encode()).hexdigest(), 16)
     rng = random.Random(h % (2**32))
 
-    # Ship dimensions — realistic naval vessel ranges
-    L = round(rng.uniform(40.0, 180.0), 1)     # Length (m)
-    B = round(rng.uniform(8.0,  28.0),  1)     # Beam (m)
-    D = round(rng.uniform(4.0,  18.0),  1)     # Depth (m)
-    hull_factor = round(rng.uniform(0.55, 0.82), 3)  # Block coefficient seed
+    L            = round(rng.uniform(40.0, 180.0), 1)
+    B            = round(rng.uniform(8.0,   28.0), 1)
+    D            = round(rng.uniform(4.0,   18.0), 1)
+    hull_factor  = round(rng.uniform(0.55,  0.82), 3)
+    V_hull       = L * B * D * hull_factor
+    rho_ship     = rng.choice([7850, 7950, 2700, 1600])
+    wall_frac    = round(rng.uniform(0.08,  0.18), 3)
+    m            = round((V_hull * wall_frac * rho_ship) / 1000) * 1000
+    KG           = round(rng.uniform(0.30,  0.55) * D, 2)
 
-    # Mass derived from geometry and realistic loading
-    V_hull = L * B * D * hull_factor
-    rho_ship = rng.choice([7850, 7950, 2700, 1600])
-    wall_fraction = round(rng.uniform(0.08, 0.18), 3)
-    V_material = V_hull * wall_fraction
-    m = round(V_material * rho_ship / 1000) * 1000  # round to nearest tonne
+    seed_str     = f"{student_id.strip()}|{L}|{B}|{D}|{m}|{rho_ship}"
+    param_hash   = hashlib.sha256(seed_str.encode()).hexdigest()[:8].upper()
 
-    # KG — centre of gravity height (30–55% of depth)
-    KG = round(rng.uniform(0.30, 0.55) * D, 2)
+    return {"L": L, "B": B, "D": D, "m": float(m),
+            "rho_ship": float(rho_ship), "KG": KG,
+            "material_name": MATERIAL_NAMES.get(rho_ship, "Steel"),
+            "param_hash": param_hash}
 
-    # Integrity hash — 8-char fingerprint for submission verification
-    integrity_seed = f"{student_id.strip()}|{L}|{B}|{D}|{m}|{rho_ship}"
-    integrity_hash = hashlib.sha256(integrity_seed.encode()).hexdigest()[:8].upper()
 
-    return {
-        "L": L, "B": B, "D": D,
-        "m": m, "rho_ship": rho_ship,
-        "KG": KG,
-        "hull_factor": hull_factor,
-        "integrity_hash": integrity_hash,
-        "material_name": {7850:"Mild Steel", 7950:"High-Strength Steel",
-                          2700:"Aluminium Alloy", 1600:"GRP / Fibreglass"}[rho_ship]
-    }
-
-def result_hash(student_id, inputs, results) -> str:
-    """Generate a verifiable submission fingerprint from inputs + outputs."""
-    payload = f"{student_id}|" + "|".join(
+def result_fingerprint(student_id: str, inputs: dict, results: dict) -> str:
+    payload = student_id + "|" + "|".join(
         f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
         for k, v in {**inputs, **results}.items()
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:12].upper()
 
 # ==============================================================================
-# PHYSICS ENGINE
+# PHYSICS ENGINE  (cached — only reruns when inputs change)
 # ==============================================================================
-def compute_buoyancy(m, L, B, D, rho_ship, KG, rho_water):
-    """
-    Full buoyancy and stability computation.
-    Box-hull approximation (valid for educational purposes).
-    """
-    # --- Volumes ---
-    V_total    = L * B * D                     # Total hull envelope (m³)
-    V_material = m / rho_ship                  # Solid material volume (m³)
-    V_void     = V_total - V_material          # Air / void volume (m³)
+@st.cache_data(show_spinner=False)
+def compute_buoyancy(m: float, L: float, B: float, D: float,
+                     rho_ship: float, KG: float, rho_water: float) -> dict:
+    V_total       = L * B * D
+    V_material    = m / rho_ship
+    V_void        = V_total - V_material
+    V_submerged   = min(m / rho_water, V_total)
+    T_actual      = V_submerged / (L * B)
+    freeboard     = D - T_actual
+    draft_ratio   = T_actual / D
 
-    # --- Buoyancy ---
-    V_theoretical = m / rho_water              # Volume needed to float (m³)
-    V_submerged   = min(V_theoretical, V_total)
-    T_actual      = V_submerged / (L * B)      # Actual draft (m)  [box hull]
-    freeboard     = D - T_actual               # Freeboard (m)
-    draft_ratio   = T_actual / D              # Dimensionless draft
+    F_buoyancy    = rho_water * G * V_submerged
+    F_gravity     = m * G
+    F_net         = F_buoyancy - F_gravity
 
-    # --- Forces ---
-    F_buoyancy = rho_water * G * V_submerged   # N
-    F_gravity  = m * G                         # N
-    F_net      = F_buoyancy - F_gravity         # N (+ve = floating)
+    displacement_t = rho_water * V_submerged / 1000
+    safe_load      = rho_water * 0.66 * V_total - m
+    sink_load      = rho_water * V_total - m
+    avg_density    = m / V_total
+    flotation_fac  = rho_water / avg_density
+    Cb             = V_submerged / (L * B * T_actual) if T_actual > 0 else 0.0
 
-    # --- Displacement ---
-    displacement_t = rho_water * V_submerged / 1000  # tonnes
+    KB  = T_actual / 2
+    BM  = (B ** 2) / (12 * T_actual) if T_actual > 0 else 0.0
+    KM  = KB + BM
+    GM  = KM - KG
 
-    # --- Load limits ---
-    safe_load = rho_water * 0.66 * V_total - m   # kg (66% immersion safety)
-    sink_load = rho_water * V_total - m           # kg (100% immersion = sinking)
-
-    # --- Density metrics ---
-    avg_density      = m / V_total
-    flotation_factor = rho_water / avg_density
-    Cb               = V_submerged / (L * B * T_actual) if T_actual > 0 else 0
-
-    # --- GM Stability (box-hull approximation) ---
-    KB  = T_actual / 2                         # Centre of buoyancy above keel
-    BM  = (B**2) / (12 * T_actual) if T_actual > 0 else 0  # Metacentric radius
-    KM  = KB + BM                              # Metacentre above keel
-    GM  = KM - KG                              # Metacentric height
-
-    # --- Status ---
     if freeboard < 0:
         status = "SINKING"
     elif F_net > 1:
@@ -187,238 +158,175 @@ def compute_buoyancy(m, L, B, D, rho_ship, KG, rho_water):
         status = "SINKING"
 
     return {
-        # Volumes
-        "V_total":        V_total,
-        "V_material":     V_material,
-        "V_void":         V_void,
-        "V_submerged":    V_submerged,
-        # Draft & geometry
-        "T_actual":       T_actual,
-        "freeboard":      freeboard,
-        "draft_ratio":    draft_ratio,
-        "Cb":             Cb,
-        # Forces
-        "F_buoyancy":     F_buoyancy,
-        "F_gravity":      F_gravity,
-        "F_net":          F_net,
-        # Displacement & loads
+        "V_total": V_total, "V_material": V_material,
+        "V_void": V_void,   "V_submerged": V_submerged,
+        "T_actual": T_actual, "freeboard": freeboard,
+        "draft_ratio": draft_ratio, "Cb": Cb,
+        "F_buoyancy": F_buoyancy, "F_gravity": F_gravity, "F_net": F_net,
         "displacement_t": displacement_t,
-        "safe_load":      safe_load,
-        "sink_load":      sink_load,
-        # Density
-        "avg_density":    avg_density,
-        "flotation_factor": flotation_factor,
-        # Stability
+        "safe_load": safe_load, "sink_load": sink_load,
+        "avg_density": avg_density, "flotation_fac": flotation_fac,
         "KB": KB, "BM": BM, "KM": KM, "GM": GM,
-        # Status
         "status": status,
     }
 
 # ==============================================================================
-# MATPLOTLIB FIGURE — HULL CROSS-SECTION
+# FIGURE 1 — HULL CROSS-SECTION + STABILITY DIAGRAM  (cached)
 # ==============================================================================
-def draw_hull_figure(L, B, D, T_actual, freeboard, GM, rho_water,
-                     F_buoyancy, F_gravity, status, water_name):
-    fig, axes = plt.subplots(1, 2, figsize=(13, 6),
-                             facecolor="#0a1628")
-    fig.suptitle("Ship Buoyancy & Stability — Visual Analysis",
-                 color="#a8dadc", fontsize=14, fontweight="bold", y=1.01)
+@st.cache_data(show_spinner=False)
+def draw_hull_figure(L: float, B: float, D: float,
+                     T_actual: float, freeboard: float, GM: float,
+                     rho_water: int, F_buoyancy: float, F_gravity: float,
+                     status: str, water_name: str):
 
-    # ── LEFT PANEL: Side-profile cross-section ─────────────────────────────
-    ax = axes[0]
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(13, 6), facecolor="#0a1628")
+    fig.suptitle("Ship Buoyancy & Stability — Visual Analysis",
+                 color="#a8dadc", fontsize=14, fontweight="bold")
+
+    # ── LEFT: Side-profile ────────────────────────────────────────────────────
     ax.set_facecolor("#0d2137")
     ax.set_title("Hull Cross-Section (Side Profile)", color="#a8dadc", fontsize=11)
 
     # Water body
-    water_top = 0.0
-    water_rect = mpatches.FancyBboxPatch(
-        (-L * 0.55, -T_actual * 1.6), L * 1.1, T_actual * 1.6 + water_top,
-        boxstyle="square", linewidth=0,
-        facecolor="#1a4a7a", alpha=0.6
-    )
-    ax.add_patch(water_rect)
+    ax.add_patch(mpatches.FancyBboxPatch(
+        (-L * 0.55, -T_actual * 1.6), L * 1.1, T_actual * 1.6,
+        boxstyle="square", linewidth=0, facecolor="#1a4a7a", alpha=0.55))
+    ax.axhline(0, color="#4fc3f7", linewidth=2.0, linestyle="--",
+               label="Waterline", zorder=5)
 
-    # Waterline
-    ax.axhline(0, color="#4fc3f7", linewidth=2.0, linestyle="--", label="Waterline", zorder=5)
-
-    # Hull shape (trapezoid — slightly wider at waterline than keel)
-    keel_half   = B / 2 * 0.85
-    wl_half     = B / 2
-    hull_depth  = T_actual
-    above_water = freeboard
-
-    hull_x = [-keel_half, keel_half, wl_half, wl_half + B*0.05,
-               wl_half + B*0.05, -wl_half - B*0.05, -wl_half - B*0.05, -wl_half, -keel_half]
-    hull_y = [-hull_depth, -hull_depth, 0, 0,
-               above_water, above_water, 0, 0, -hull_depth]
-
-    hull_color = "#8d99ae" if "FLOATING" in status else "#e63946"
-    ax.fill(hull_x, hull_y, color=hull_color, alpha=0.85, zorder=6, label="Hull")
-    ax.plot(hull_x, hull_y, color="#ccc", linewidth=1.5, zorder=7)
+    # Hull trapezoid
+    keel_h = B / 2 * 0.85
+    wl_h   = B / 2
+    ow     = B * 0.05
+    hx = [-keel_h, keel_h, wl_h, wl_h+ow,  wl_h+ow,  -wl_h-ow, -wl_h-ow, -wl_h, -keel_h]
+    hy = [-T_actual, -T_actual, 0, 0, freeboard, freeboard, 0, 0, -T_actual]
+    hull_col = "#8d99ae" if "FLOATING" in status else "#e63946"
+    ax.fill(hx, hy, color=hull_col, alpha=0.85, zorder=6, label="Hull")
+    ax.plot(hx, hy, color="#ccc", linewidth=1.5, zorder=7)
 
     # Mast
-    ax.plot([0, 0], [above_water, above_water + D * 0.4],
-            color="#ccc", linewidth=2.5, zorder=8)
-    ax.plot([-B * 0.18, B * 0.18],
-            [above_water + D * 0.22, above_water + D * 0.22],
-            color="#ccc", linewidth=1.5, zorder=8)
+    ax.plot([0, 0], [freeboard, freeboard + D*0.4], color="#ccc", lw=2.5, zorder=8)
+    ax.plot([-B*0.18, B*0.18], [freeboard+D*0.22]*2, color="#ccc", lw=1.5, zorder=8)
 
-    # Draft arrow
-    ax.annotate("", xy=(wl_half * 1.5, -T_actual),
-                xytext=(wl_half * 1.5, 0),
+    # Draft annotation
+    ax.annotate("", xy=(wl_h*1.5, -T_actual), xytext=(wl_h*1.5, 0),
                 arrowprops=dict(arrowstyle="<->", color="#f1c40f", lw=1.5))
-    ax.text(wl_half * 1.6, -T_actual / 2,
-            f"T={T_actual:.2f}m", color="#f1c40f", fontsize=8, va="center")
+    ax.text(wl_h*1.65, -T_actual/2, f"T={T_actual:.2f}m",
+            color="#f1c40f", fontsize=8, va="center")
 
-    # Freeboard arrow
+    # Freeboard annotation
     if freeboard > 0:
-        ax.annotate("", xy=(-wl_half * 1.5, above_water),
-                    xytext=(-wl_half * 1.5, 0),
+        ax.annotate("", xy=(-wl_h*1.5, freeboard), xytext=(-wl_h*1.5, 0),
                     arrowprops=dict(arrowstyle="<->", color="#2ecc71", lw=1.5))
-        ax.text(-wl_half * 1.6, above_water / 2,
-                f"FB={freeboard:.2f}m", color="#2ecc71", fontsize=8,
-                va="center", ha="right")
+        ax.text(-wl_h*1.65, freeboard/2, f"FB={freeboard:.2f}m",
+                color="#2ecc71", fontsize=8, va="center", ha="right")
 
-    # KB, KG markers on hull centreline
-    ax.plot(0, -T_actual / 2, "o", color="#e74c3c", markersize=8, zorder=10, label=f"KB={T_actual/2:.2f}m")
+    # Centre of Buoyancy marker
+    ax.plot(0, -T_actual/2, "o", color="#e74c3c", ms=8, zorder=10)
+    ax.text(B*0.1, -T_actual/2, "B (KB)", color="#e74c3c", fontsize=8, va="center")
 
-    # Centre of buoyancy label
-    ax.text(B * 0.08, -T_actual / 2, "B (KB)", color="#e74c3c", fontsize=8, va="center")
-
-    # Force arrows (scaled)
-    scale = D * 0.6 / max(F_buoyancy, F_gravity)
-    F_b_len = F_buoyancy * scale
-    F_g_len = F_gravity  * scale
-    ax.annotate("", xy=(B * 0.7, F_b_len * 0.5),
-                xytext=(B * 0.7, -F_b_len * 0.5),
-                arrowprops=dict(arrowstyle="-|>", color="#2ecc71",
-                                lw=2, mutation_scale=14))
-    ax.text(B * 0.75, 0, f"Fb\n{F_buoyancy/1000:.0f}kN",
+    # Force arrows (scaled to D)
+    scale  = D * 0.5 / max(F_buoyancy, F_gravity)
+    fb_len = F_buoyancy * scale
+    fg_len = F_gravity  * scale
+    ax.annotate("", xy=(B*0.7,  fb_len*0.5), xytext=(B*0.7,  -fb_len*0.5),
+                arrowprops=dict(arrowstyle="-|>", color="#2ecc71", lw=2, mutation_scale=14))
+    ax.text(B*0.76, 0, f"Fb\n{F_buoyancy/1000:.0f}kN",
             color="#2ecc71", fontsize=7.5, va="center")
-
-    ax.annotate("", xy=(-B * 0.7, -F_g_len * 0.5),
-                xytext=(-B * 0.7, F_g_len * 0.5),
-                arrowprops=dict(arrowstyle="-|>", color="#e63946",
-                                lw=2, mutation_scale=14))
-    ax.text(-B * 0.75, 0, f"Fg\n{F_gravity/1000:.0f}kN",
+    ax.annotate("", xy=(-B*0.7, -fg_len*0.5), xytext=(-B*0.7,  fg_len*0.5),
+                arrowprops=dict(arrowstyle="-|>", color="#e63946", lw=2, mutation_scale=14))
+    ax.text(-B*0.76, 0, f"Fg\n{F_gravity/1000:.0f}kN",
             color="#e63946", fontsize=7.5, va="center", ha="right")
 
-    # Axes formatting
-    margin = D * 0.7
-    ax.set_xlim(-L * 0.5, L * 0.5)
-    ax.set_ylim(-T_actual * 1.5 - margin * 0.3, above_water + D * 0.6 + margin * 0.2)
+    ax.text(0, -T_actual*1.35,
+            water_name.split("(")[0].strip().replace("🌊","").replace("🏖️","")
+                      .replace("🌿","").replace("🏞️","").replace("🧪","").strip(),
+            color="#4fc3f7", fontsize=8, ha="center", style="italic")
+
+    ax.set_xlim(-L*0.5, L*0.5)
+    ax.set_ylim(-T_actual*1.5 - D*0.3, freeboard + D*0.65)
     ax.set_xlabel("Beam (m)", color="#a8dadc", fontsize=9)
     ax.set_ylabel("Height above Keel (m)", color="#a8dadc", fontsize=9)
     ax.tick_params(colors="#a8dadc", labelsize=8)
-    for spine in ax.spines.values():
-        spine.set_edgecolor("#457b9d")
+    for sp in ax.spines.values(): sp.set_edgecolor("#457b9d")
     ax.legend(loc="upper left", fontsize=7.5, facecolor="#1d3557",
               labelcolor="#a8dadc", edgecolor="#457b9d")
 
-    # Water label
-    ax.text(0, -T_actual * 1.35, water_name.split("(")[0].strip(),
-            color="#4fc3f7", fontsize=8, ha="center", style="italic")
-
-    # ── RIGHT PANEL: Stability diagram ────────────────────────────────────
-    ax2 = axes[1]
+    # ── RIGHT: Stability diagram ──────────────────────────────────────────────
     ax2.set_facecolor("#0d2137")
     ax2.set_title("Stability Diagram — GM Visualisation", color="#a8dadc", fontsize=11)
 
-    # Hull outline (front view — rectangular cross-section)
-    hull_w = B
-    hull_d = D
-
-    # Water fill
-    water_h = T_actual
-    ax2.fill_between([-hull_w/2, hull_w/2], [-hull_d/2, -hull_d/2],
-                     [-hull_d/2 + water_h, -hull_d/2 + water_h],
-                     color="#1a4a7a", alpha=0.5, zorder=3)
+    keel_y  = -D / 2
+    KB_y    = keel_y + T_actual / 2
+    KG_y    = keel_y + (D * 0.45)           # representative visual position
+    BM_val  = (B**2) / (12 * T_actual) if T_actual > 0 else 0
+    KM_y    = keel_y + T_actual/2 + BM_val
 
     # Hull rectangle
-    rect = mpatches.Rectangle((-hull_w/2, -hull_d/2), hull_w, hull_d,
-                               linewidth=2, edgecolor="#8d99ae",
-                               facecolor="#3a4a5a", alpha=0.7, zorder=4)
-    ax2.add_patch(rect)
+    ax2.add_patch(mpatches.Rectangle(
+        (-B/2, keel_y), B, D,
+        linewidth=2, edgecolor="#8d99ae", facecolor="#3a4a5a", alpha=0.7, zorder=4))
 
-    # Waterline
-    ax2.axhline(-hull_d/2 + water_h, color="#4fc3f7", linewidth=1.5,
+    # Water fill inside hull up to waterline
+    ax2.fill_between([-B/2, B/2], [keel_y, keel_y],
+                     [keel_y + T_actual]*2,
+                     color="#1a4a7a", alpha=0.5, zorder=3)
+    ax2.axhline(keel_y + T_actual, color="#4fc3f7", lw=1.5,
                 linestyle="--", label="Waterline", zorder=5)
 
-    # Key points on centreline
-    keel_y  = -hull_d / 2
-    KB_y    = keel_y + T_actual / 2
-    KG_y    = keel_y  # KG is from keel
-    from_keel = keel_y  # reference
-
-    # Compute actual y positions from keel
-    KB_plot = keel_y + T_actual / 2
-    KG_plot = keel_y + (D * 0.5)    # approximate KG visual (mid-ship for diagram)
-
-    # Use actual computed KG from input
-    KG_val  = D * 0.5               # placeholder visual — actual KG shown as text
-    KM_plot = keel_y + (T_actual / 2 + (B**2) / (12 * T_actual)) if T_actual > 0 else keel_y
-
-    # Plot key points
-    for y_pt, label_txt, col in [
-        (keel_y,  "K (Keel)",          "#888"),
-        (KB_plot, f"B (KB={T_actual/2:.2f}m)", "#e74c3c"),
-        (KG_plot, f"G (KG≈{D*0.5:.2f}m)",     "#f39c12"),
-        (KM_plot, f"M (KM={T_actual/2 + (B**2)/(12*T_actual) if T_actual>0 else 0:.2f}m)", "#9b59b6"),
+    # Key points
+    gm_color = "#2ecc71" if GM > 0.15 else ("#f1c40f" if GM > 0 else "#e63946")
+    for y_pt, lbl, col in [
+        (keel_y, "K  (Keel)",                     "#888888"),
+        (KB_y,   f"B  KB = {T_actual/2:.2f} m",   "#e74c3c"),
+        (KG_y,   f"G  KG = {KG_y - keel_y:.2f} m (approx)", "#f39c12"),
+        (KM_y,   f"M  KM = {T_actual/2+BM_val:.2f} m",  "#9b59b6"),
     ]:
-        ax2.plot(0, y_pt, "o", color=col, markersize=9, zorder=10)
-        ax2.text(hull_w * 0.55, y_pt, label_txt, color=col,
-                 fontsize=8.5, va="center")
+        ax2.plot(0, y_pt, "o", color=col, ms=9, zorder=10)
+        ax2.text(B*0.58, y_pt, lbl, color=col, fontsize=8.5, va="center")
 
-    # GM arrow (K→M with G marked)
-    ax2.annotate("", xy=(hull_w * 0.35, KM_plot),
-                xytext=(hull_w * 0.35, keel_y),
-                arrowprops=dict(arrowstyle="<->",
-                                color="#9b59b6", lw=2))
+    # KM ↔ K arrow
+    ax2.annotate("", xy=(B*0.38, KM_y), xytext=(B*0.38, keel_y),
+                arrowprops=dict(arrowstyle="<->", color="#9b59b6", lw=2))
 
     # GM label
-    gm_color = "#2ecc71" if GM > 0.15 else ("#f1c40f" if GM > 0 else "#e63946")
-    ax2.text(-hull_w * 0.55, (KM_plot + KB_plot) / 2,
-             f"GM = {GM:.3f} m", color=gm_color, fontsize=10,
-             fontweight="bold", ha="right", va="center",
+    ax2.text(-B*0.58, (KM_y + KB_y)/2, f"GM = {GM:.3f} m",
+             color=gm_color, fontsize=10, fontweight="bold",
+             ha="right", va="center",
              bbox=dict(boxstyle="round,pad=0.3", facecolor="#1d3557",
                        edgecolor=gm_color, alpha=0.9))
 
-    # Stability status label
-    gm_status = ("✅ STABLE" if GM > 0.15
-                 else "⚠️ MARGINAL" if GM > 0
-                 else "❌ UNSTABLE")
-    ax2.text(0, KM_plot + hull_d * 0.12, gm_status,
-             color=gm_color, fontsize=11, fontweight="bold",
-             ha="center", va="bottom",
+    gm_verdict = "✅ STABLE" if GM > 0.15 else ("⚠️ MARGINAL" if GM > 0 else "❌ UNSTABLE")
+    ax2.text(0, KM_y + D*0.12, gm_verdict,
+             color=gm_color, fontsize=11, fontweight="bold", ha="center",
              bbox=dict(boxstyle="round,pad=0.4", facecolor="#0a1628",
                        edgecolor=gm_color, alpha=0.95))
 
-    ax2.set_xlim(-hull_w * 1.2, hull_w * 1.2)
-    ax2.set_ylim(keel_y - hull_d * 0.3, KM_plot + hull_d * 0.4)
+    ax2.set_xlim(-B*1.25, B*1.25)
+    ax2.set_ylim(keel_y - D*0.3, KM_y + D*0.45)
     ax2.set_xlabel("Beam (m)", color="#a8dadc", fontsize=9)
     ax2.set_ylabel("Height above Keel (m)", color="#a8dadc", fontsize=9)
     ax2.tick_params(colors="#a8dadc", labelsize=8)
-    for spine in ax2.spines.values():
-        spine.set_edgecolor("#457b9d")
+    for sp in ax2.spines.values(): sp.set_edgecolor("#457b9d")
     ax2.legend(loc="upper left", fontsize=7.5, facecolor="#1d3557",
                labelcolor="#a8dadc", edgecolor="#457b9d")
 
     plt.tight_layout()
     return fig
 
-
 # ==============================================================================
-# WATER SCENARIO COMPARISON CHART
+# FIGURE 2 — WATER SCENARIO COMPARISON  (cached)
 # ==============================================================================
-def draw_water_comparison(m, L, B, D, rho_ship, KG):
-    """Bar chart comparing key metrics across all water environments."""
-    labels_w, drafts, GMs, Fbs, Cbs = [], [], [], [], []
-
+@st.cache_data(show_spinner=False)
+def draw_water_comparison(m: float, L: float, B: float,
+                           D: float, rho_ship: float, KG: float):
+    names, drafts, GMs, Fbs, Cbs = [], [], [], [], []
     for name, props in WATER_TYPES.items():
-        r = compute_buoyancy(m, L, B, D, rho_ship, KG, props["rho"])
-        short = name.split("(")[0].strip().replace("🌊","").replace("🏖️","") \
-                    .replace("🌿","").replace("🏞️","").replace("🧪","").strip()
-        labels_w.append(short)
+        r = compute_buoyancy(m, L, B, D, rho_ship, KG, float(props["rho"]))
+        short = (name.split("(")[0].strip()
+                     .replace("🌊","").replace("🏖️","")
+                     .replace("🌿","").replace("🏞️","").replace("🧪","").strip())
+        names.append(short)
         drafts.append(r["T_actual"])
         GMs.append(r["GM"])
         Fbs.append(r["F_buoyancy"] / 1000)
@@ -428,223 +336,197 @@ def draw_water_comparison(m, L, B, D, rho_ship, KG):
     fig.suptitle("Water Environment Comparison — Buoyancy Performance",
                  color="#a8dadc", fontsize=13, fontweight="bold")
 
-    datasets = [
-        (axes[0,0], drafts, "Draft T (m)",           "#4fc3f7", "Draft decreases in denser water"),
-        (axes[0,1], GMs,    "GM — Metacentric Height (m)", "#2ecc71", "Stability improves in denser water"),
-        (axes[1,0], Fbs,    "Buoyant Force (kN)",     "#e74c3c", "Force increases with water density"),
-        (axes[1,1], Cbs,    "Block Coefficient Cb",   "#f39c12", "Cb varies with submerged volume"),
+    panels = [
+        (axes[0,0], drafts, "Draft T (m)",                "#4fc3f7", "Draft decreases in denser water"),
+        (axes[0,1], GMs,    "GM — Metacentric Height (m)","#2ecc71", "Stability improves in denser water"),
+        (axes[1,0], Fbs,    "Buoyant Force (kN)",         "#e74c3c", "Force increases with water density"),
+        (axes[1,1], Cbs,    "Block Coefficient Cb",       "#f39c12", "Cb varies with submerged volume"),
     ]
-
-    for ax, vals, ylabel, color, note in datasets:
+    for ax, vals, ylabel, color, note in panels:
         ax.set_facecolor("#0d2137")
-        bars = ax.bar(labels_w, vals, color=color, alpha=0.8, edgecolor="#333", width=0.5)
+        bars = ax.bar(names, vals, color=color, alpha=0.8, edgecolor="#333", width=0.5)
         ax.set_ylabel(ylabel, color="#a8dadc", fontsize=8)
-        ax.tick_params(colors="#a8dadc", labelsize=7)
-        ax.set_xticks(range(len(labels_w)))
-        ax.set_xticklabels(labels_w, rotation=20, ha="right", fontsize=7)
-        for spine in ax.spines.values():
-            spine.set_edgecolor("#457b9d")
-        for bar, val in zip(bars, vals):
-            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(vals)*0.01,
-                    f"{val:.2f}", ha="center", va="bottom", color="#a8dadc", fontsize=7)
         ax.set_title(note, color="#888", fontsize=7.5, style="italic")
+        ax.tick_params(colors="#a8dadc", labelsize=7)
+        ax.set_xticks(range(len(names)))
+        ax.set_xticklabels(names, rotation=22, ha="right", fontsize=7)
+        for sp in ax.spines.values(): sp.set_edgecolor("#457b9d")
+        top = max(abs(v) for v in vals) if vals else 1
+        for bar, val in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width()/2,
+                    bar.get_height() + top * 0.02,
+                    f"{val:.2f}", ha="center", va="bottom",
+                    color="#a8dadc", fontsize=7)
 
     plt.tight_layout()
     return fig
 
+# ==============================================================================
+# SIDEBAR — INPUTS
+# ==============================================================================
+with st.sidebar:
+    st.markdown("## 🎓 Academic Integrity")
+    st.markdown("""<div class='integrity-box'>Enter your <b>Student ID</b> to receive
+    unique, verifiable ship parameters for your assignment.</div>""",
+    unsafe_allow_html=True)
+
+    student_id  = st.text_input("Student ID", placeholder="e.g. 1234567")
+    use_gen     = False
+    gen_params  = None
+
+    if student_id.strip():
+        gen_params  = generate_student_params(student_id.strip())
+        use_gen     = st.toggle("🔒 Use ID-Generated Parameters", value=True)
+        if use_gen:
+            st.markdown(f"""<div class='integrity-box'>
+            <b>🔐 Your Assignment Ship</b><br>
+            L = <b>{gen_params['L']} m</b> &nbsp;|&nbsp;
+            B = <b>{gen_params['B']} m</b> &nbsp;|&nbsp;
+            D = <b>{gen_params['D']} m</b><br>
+            Mass = <b>{gen_params['m']:,.0f} kg</b><br>
+            Material = <b>{gen_params['material_name']}</b>
+            ({gen_params['rho_ship']:.0f} kg/m³)<br>
+            KG = <b>{gen_params['KG']} m</b><br><br>
+            📋 <b>Parameter Hash: <code>{gen_params['param_hash']}</code></b><br>
+            <small>Include this in your report submission.</small>
+            </div>""", unsafe_allow_html=True)
+
+    st.divider()
+    st.markdown("## 🌊 Water Environment")
+    water_sel = st.selectbox("Select Water Type", list(WATER_TYPES.keys()), index=0)
+    rho_water = float(WATER_TYPES[water_sel]["rho"])
+    st.info(f"ρ_water = **{rho_water:.0f} kg/m³**\n\n{WATER_TYPES[water_sel]['desc']}")
+
+    st.divider()
+    st.markdown("## 📐 Ship Geometry & Mass")
+
+    if use_gen and gen_params:
+        L          = gen_params["L"]
+        B          = gen_params["B"]
+        D          = gen_params["D"]
+        m          = gen_params["m"]
+        rho_ship   = gen_params["rho_ship"]
+        KG         = gen_params["KG"]
+        mat_name   = gen_params["material_name"]
+        st.caption(f"*Locked to Student ID `{student_id}`*")
+        st.markdown(f"**L** = {L} m | **B** = {B} m | **D** = {D} m")
+        st.markdown(f"**Mass** = {m:,.0f} kg | **KG** = {KG} m")
+        st.markdown(f"**Material** = {mat_name} ({rho_ship:.0f} kg/m³)")
+    else:
+        L        = st.number_input("Length L (m)",   1.0, 500.0,  80.0, 1.0)
+        B        = st.number_input("Beam B (m)",     1.0, 100.0,  14.0, 0.5)
+        D        = st.number_input("Depth D (m)",    1.0,  80.0,   8.0, 0.5)
+        m        = st.number_input("Ship Mass (kg)", 100.0, 1e8, 500000.0,
+                                   1000.0, format="%.0f")
+        KG       = st.number_input("KG — CoG above Keel (m)", 0.1, 50.0, 4.0, 0.1,
+                                   help="Typically 40–55% of ship depth.")
+        mat_sel  = st.selectbox("Material Preset", list(MATERIAL_PRESETS.keys()))
+        if MATERIAL_PRESETS[mat_sel] is not None:
+            rho_ship = float(MATERIAL_PRESETS[mat_sel])
+            mat_name = mat_sel
+            st.info(f"ρ = **{rho_ship:.0f} kg/m³**")
+        else:
+            rho_ship = st.number_input("Custom Density (kg/m³)", 100.0, 20000.0, 7850.0, 10.0)
+            mat_name = "Custom"
 
 # ==============================================================================
-# STREAMLIT UI — SIDEBAR
+# VALIDATION
+# ==============================================================================
+errors = []
+if m / rho_ship > L * B * D:
+    errors.append(
+        f"Material volume ({m/rho_ship:.1f} m³) exceeds hull envelope "
+        f"({L*B*D:.1f} m³). Reduce mass or choose a lighter material.")
+if KG >= D:
+    errors.append(f"KG ({KG} m) must be less than ship depth D ({D} m).")
+
+if errors:
+    for e in errors: st.error(f"⚠️ {e}")
+    st.stop()
+
+# ==============================================================================
+# COMPUTE
+# ==============================================================================
+res = compute_buoyancy(float(m), float(L), float(B), float(D),
+                       float(rho_ship), float(KG), rho_water)
+
+# ==============================================================================
+# HEADER
 # ==============================================================================
 st.title("⚓ Ship Buoyancy & Stability Simulator")
 st.markdown("*Naval Fluid Mechanics — Educational Tool | Swinburne University of Technology*")
 st.divider()
 
-# ── SIDEBAR ──────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 🎓 Academic Integrity")
-    st.markdown("""
-    <div class='integrity-box'>
-    Enter your <b>Student ID</b> to receive unique ship parameters.
-    Your results are individually generated and verifiable.
-    </div>
-    """, unsafe_allow_html=True)
-
-    student_id = st.text_input("Student ID", placeholder="e.g. 1234567",
-                               help="Your unique ID seeds all ship parameters. Same ID = same ship. Different IDs = different ships.")
-
-    use_generated = False
-    gen_params = None
-
-    if student_id.strip():
-        gen_params = generate_student_params(student_id)
-        use_generated = st.toggle("🔒 Use ID-Generated Parameters", value=True,
-                                  help="Lock parameters to your Student ID for academic integrity.")
-        if use_generated:
-            st.markdown(f"""
-            <div class='integrity-box'>
-            <b>🔐 Your Assignment Parameters</b><br>
-            L = <b>{gen_params['L']} m</b> &nbsp;|&nbsp; B = <b>{gen_params['B']} m</b> &nbsp;|&nbsp; D = <b>{gen_params['D']} m</b><br>
-            Mass = <b>{gen_params['m']:,} kg</b><br>
-            Material = <b>{gen_params['material_name']}</b> ({gen_params['rho_ship']} kg/m³)<br>
-            KG = <b>{gen_params['KG']} m</b><br><br>
-            <b>📋 Parameter Hash: <code>{gen_params['integrity_hash']}</code></b><br>
-            <small>Include this hash in your report submission.</small>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.divider()
-    st.markdown("## 🌊 Water Environment")
-    water_selection = st.selectbox(
-        "Select Water Type",
-        options=list(WATER_TYPES.keys()),
-        index=0,
-        help="Different water densities significantly affect buoyancy, draft, and stability."
-    )
-    rho_water = WATER_TYPES[water_selection]["rho"]
-    st.info(f"ρ_water = **{rho_water} kg/m³**\n\n{WATER_TYPES[water_selection]['desc']}")
-
-    st.divider()
-    st.markdown("## 📐 Ship Geometry")
-
-    if use_generated and gen_params:
-        L       = gen_params["L"]
-        B       = gen_params["B"]
-        D       = gen_params["D"]
-        m       = float(gen_params["m"])
-        rho_ship_val = float(gen_params["rho_ship"])
-        KG      = gen_params["KG"]
-        st.markdown(f"*Parameters locked to Student ID `{student_id}`*")
-        # Show read-only info
-        st.markdown(f"**L** = {L} m &nbsp; **B** = {B} m &nbsp; **D** = {D} m")
-        st.markdown(f"**Mass** = {m:,.0f} kg")
-        st.markdown(f"**KG** = {KG} m")
-        material_name = gen_params["material_name"]
-        st.markdown(f"**Material** = {material_name}")
-    else:
-        L  = st.number_input("Length L (m)",  min_value=1.0, max_value=500.0, value=80.0,  step=1.0)
-        B  = st.number_input("Beam B (m)",    min_value=1.0, max_value=100.0, value=14.0,  step=0.5)
-        D  = st.number_input("Depth D (m)",   min_value=1.0, max_value=80.0,  value=8.0,   step=0.5)
-        m  = st.number_input("Ship Mass (kg)",min_value=100.0, max_value=1e8, value=500000.0, step=1000.0, format="%.0f")
-        KG = st.number_input("KG — Centre of Gravity above Keel (m)",
-                             min_value=0.1, max_value=50.0, value=4.0, step=0.1,
-                             help="Height of centre of gravity above keel. Typically 40–55% of depth.")
-
-        st.markdown("#### 🔩 Hull Material")
-        mat_choice = st.selectbox("Material Preset", options=list(MATERIAL_PRESETS.keys()))
-        if MATERIAL_PRESETS[mat_choice] is not None:
-            rho_ship_val = float(MATERIAL_PRESETS[mat_choice])
-            st.info(f"ρ_material = **{rho_ship_val:.0f} kg/m³**")
-        else:
-            rho_ship_val = st.number_input("Custom Density (kg/m³)",
-                                           min_value=100.0, max_value=20000.0,
-                                           value=7850.0, step=10.0)
-        material_name = mat_choice
-
-# ==============================================================================
-# VALIDATION & CALCULATION
-# ==============================================================================
-errors = []
-if L <= 0 or B <= 0 or D <= 0:
-    errors.append("Ship dimensions L, B, D must all be positive.")
-if m <= 0:
-    errors.append("Ship mass must be positive.")
-if rho_ship_val <= 0:
-    errors.append("Material density must be positive.")
-if KG >= D:
-    errors.append(f"KG ({KG} m) cannot exceed ship depth D ({D} m).")
-
-V_material_check = m / rho_ship_val
-V_total_check    = L * B * D
-if V_material_check > V_total_check:
-    errors.append(
-        f"Material volume ({V_material_check:.1f} m³) exceeds total hull volume "
-        f"({V_total_check:.1f} m³). Reduce mass, increase dimensions, or choose lighter material."
-    )
-
-if errors:
-    for e in errors:
-        st.error(f"⚠️ {e}")
-    st.stop()
-
-# Run computation
-res = compute_buoyancy(m, L, B, D, rho_ship_val, KG, rho_water)
-
-# ==============================================================================
-# STATUS BANNER
-# ==============================================================================
 status = res["status"]
-if "STABLE" in status and "FLOATING" in status:
-    css_cls = "status-float"
-elif "NEUTRAL" in status:
-    css_cls = "status-neutral"
-else:
-    css_cls = "status-sink"
-
+css_cls = ("status-float" if "FLOATING" in status
+           else "status-neutral" if "NEUTRAL" in status
+           else "status-sink")
 st.markdown(f"<div class='{css_cls}'>⚓ {status}</div>", unsafe_allow_html=True)
 st.markdown("")
 
 # ==============================================================================
 # RESULTS — THREE COLUMNS
 # ==============================================================================
-col1, col2, col3 = st.columns(3)
+c1, c2, c3 = st.columns(3)
 
-with col1:
+with c1:
     st.markdown("### 📦 Volume Analysis")
-    st.metric("Total Hull Volume",    f"{res['V_total']:.2f} m³")
-    st.metric("Material Volume",      f"{res['V_material']:.2f} m³")
-    st.metric("Void / Air Volume",    f"{res['V_void']:.2f} m³")
-    st.metric("Submerged Volume",     f"{res['V_submerged']:.2f} m³")
-
+    st.metric("Total Hull Volume",   f"{res['V_total']:.2f} m³")
+    st.metric("Material Volume",     f"{res['V_material']:.2f} m³")
+    st.metric("Void / Air Volume",   f"{res['V_void']:.2f} m³")
+    st.metric("Submerged Volume",    f"{res['V_submerged']:.2f} m³")
     st.markdown("### 📏 Geometry")
-    st.metric("Actual Draft T",       f"{res['T_actual']:.3f} m")
-    st.metric("Freeboard",            f"{res['freeboard']:.3f} m",
-              delta="OK" if res['freeboard'] > 0 else "FLOODED",
-              delta_color="normal" if res['freeboard'] > 0 else "inverse")
-    st.metric("Draft Ratio T/D",      f"{res['draft_ratio']:.4f}")
-    st.metric("Block Coefficient Cb", f"{res['Cb']:.4f}",
-              help="Cb = V_submerged / (L×B×T). Range: 0.5 (fast) to 0.85 (tanker).")
+    st.metric("Actual Draft T",      f"{res['T_actual']:.3f} m")
+    st.metric("Freeboard",           f"{res['freeboard']:.3f} m",
+              delta="Safe" if res['freeboard'] > 0 else "FLOODED",
+              delta_color="normal"  if res['freeboard'] > 0 else "inverse")
+    st.metric("Draft Ratio T/D",     f"{res['draft_ratio']:.4f}")
+    st.metric("Block Coefficient Cb",f"{res['Cb']:.4f}",
+              help="0.50–0.65 fast vessels | 0.75–0.85 bulk carriers")
 
-with col2:
+with c2:
     st.markdown("### ⚡ Forces")
-    st.metric("Buoyant Force",        f"{res['F_buoyancy']/1000:.2f} kN")
-    st.metric("Gravitational Force",  f"{res['F_gravity']/1000:.2f} kN")
-    st.metric("Net Force",            f"{res['F_net']/1000:.2f} kN",
-              delta="Positive = Floating" if res['F_net'] > 0 else "Negative = Sinking",
-              delta_color="normal" if res['F_net'] > 0 else "inverse")
-    st.metric("Displacement",         f"{res['displacement_t']:.1f} tonnes")
-
+    st.metric("Buoyant Force",       f"{res['F_buoyancy']/1000:.2f} kN")
+    st.metric("Gravitational Force", f"{res['F_gravity']/1000:.2f} kN")
+    st.metric("Net Force",           f"{res['F_net']/1000:.2f} kN",
+              delta="Floating" if res['F_net'] > 0 else "Sinking",
+              delta_color="normal"  if res['F_net'] > 0 else "inverse")
+    st.metric("Displacement",        f"{res['displacement_t']:.1f} t")
     st.markdown("### 🚢 Load Capacity")
-    st.metric("Safe Additional Load", f"{res['safe_load']:,.0f} kg",
-              help="Maximum load at 66% immersion safety margin.")
-    st.metric("Load to Sink",         f"{res['sink_load']:,.0f} kg",
-              help="Additional load that would cause total submersion.")
-    st.metric("Average Ship Density", f"{res['avg_density']:.2f} kg/m³")
-    st.metric("Flotation Factor",     f"{res['flotation_factor']:.4f}",
-              help="ρ_water / ρ_avg_ship. > 1 = floating, < 1 = sinking.")
+    st.metric("Safe Additional Load",f"{res['safe_load']:,.0f} kg",
+              help="At 66% immersion safety margin")
+    st.metric("Load to Sink",        f"{res['sink_load']:,.0f} kg")
+    st.metric("Average Ship Density",f"{res['avg_density']:.2f} kg/m³")
+    st.metric("Flotation Factor",    f"{res['flotation_fac']:.4f}",
+              help="ρ_water / ρ_avg. > 1 = floating")
 
-with col3:
-    st.markdown("### 🎯 GM Stability (Box-Hull)")
+with c3:
+    st.markdown("### 🎯 GM Stability")
     st.metric("KB — Centre of Buoyancy", f"{res['KB']:.3f} m",
-              help="Height of centre of buoyancy above keel. KB = T/2 for box hull.")
+              help="KB = T/2 (box-hull approximation)")
     st.metric("BM — Metacentric Radius", f"{res['BM']:.3f} m",
-              help="BM = B² / (12·T). Wider beam → larger BM → more stable.")
-    st.metric("KM — Metacentre",         f"{res['KM']:.3f} m",
-              help="KM = KB + BM. Height of metacentre above keel.")
+              help="BM = B² / (12·T). Wider beam → more stable.")
+    st.metric("KM — Metacentre",         f"{res['KM']:.3f} m")
     st.metric("KG — Centre of Gravity",  f"{KG:.3f} m")
+    gm = res["GM"]
+    gm_note = ("✅ Stable" if gm > 0.15
+               else "⚠️ Marginal" if gm > 0
+               else "❌ UNSTABLE — will capsize")
+    st.metric("GM — Metacentric Height", f"{gm:.3f} m",
+              delta=gm_note,
+              delta_color="normal" if gm > 0 else "inverse")
 
-    gm_val = res["GM"]
-    gm_color = "normal" if gm_val > 0 else "inverse"
-    gm_note  = ("✅ Stable" if gm_val > 0.15
-                else "⚠️ Marginally stable" if gm_val > 0
-                else "❌ UNSTABLE — vessel will capsize")
-    st.metric("GM — Metacentric Height", f"{gm_val:.3f} m",
-              delta=gm_note, delta_color=gm_color)
+    # GM remediation hint
+    if gm <= 0:
+        st.markdown("""<div style='background:#3a1a00;border:1px solid #e67e22;
+        border-radius:6px;padding:8px;color:#e67e22;font-size:0.85em;'>
+        ⚠️ <b>To improve GM:</b> increase Beam B (BM ∝ B²),
+        reduce KG (lower cargo/ballast), or reduce draft T.
+        </div>""", unsafe_allow_html=True)
 
-    st.markdown("### 💧 Water Environment")
-    st.metric("Water Density ρ_w",   f"{rho_water} kg/m³")
-    st.metric("Ship Material ρ_s",   f"{rho_ship_val:.0f} kg/m³",
-              help=f"Material: {material_name}")
+    st.markdown("### 💧 Environment")
+    st.metric("Water ρ_w",   f"{rho_water:.0f} kg/m³")
+    st.metric("Material ρ_s",f"{rho_ship:.0f} kg/m³")
 
 st.divider()
 
@@ -652,13 +534,14 @@ st.divider()
 # HULL FIGURE
 # ==============================================================================
 st.markdown("## 🖼️ Hull Visualisation & Stability Diagram")
-fig_hull = draw_hull_figure(
-    L, B, D, res["T_actual"], res["freeboard"],
-    res["GM"], rho_water, res["F_buoyancy"], res["F_gravity"],
-    status, water_selection
-)
-st.pyplot(fig_hull, use_container_width=True)
-plt.close(fig_hull)
+with st.spinner("Rendering hull diagram…"):
+    fig1 = draw_hull_figure(
+        float(L), float(B), float(D),
+        res["T_actual"], res["freeboard"], res["GM"],
+        int(rho_water), res["F_buoyancy"], res["F_gravity"],
+        status, water_sel)
+    st.pyplot(fig1, use_container_width=True)
+    plt.close(fig1)
 
 st.divider()
 
@@ -666,35 +549,34 @@ st.divider()
 # WATER SCENARIO COMPARISON
 # ==============================================================================
 st.markdown("## 🌊 Water Environment Comparison")
-st.markdown(
-    "*Analyse how your ship performs across all water types — "
-    "from hypersaline brine to freshwater rivers. "
-    "This section supports analytical and evaluation-level learning objectives.*"
-)
+st.caption("Analytical exercise: observe how your ship's performance changes "
+           "across five water environments — from Dead Sea brine to freshwater rivers.")
 
-fig_compare = draw_water_comparison(m, L, B, D, rho_ship_val, KG)
-st.pyplot(fig_compare, use_container_width=True)
-plt.close(fig_compare)
+with st.spinner("Computing water scenarios…"):
+    fig2 = draw_water_comparison(
+        float(m), float(L), float(B), float(D), float(rho_ship), float(KG))
+    st.pyplot(fig2, use_container_width=True)
+    plt.close(fig2)
 
 # Comparison table
 st.markdown("#### 📊 Numerical Comparison Table")
-table_rows = []
+rows = []
 for name, props in WATER_TYPES.items():
-    r = compute_buoyancy(m, L, B, D, rho_ship_val, KG, props["rho"])
-    table_rows.append({
-        "Water Environment":    name.split("(")[0].strip(),
-        "ρ_w (kg/m³)":         props["rho"],
-        "Draft T (m)":          round(r["T_actual"], 3),
-        "Freeboard (m)":        round(r["freeboard"], 3),
-        "Buoyant Force (kN)":   round(r["F_buoyancy"] / 1000, 2),
-        "Displacement (t)":     round(r["displacement_t"], 1),
-        "GM (m)":               round(r["GM"], 3),
-        "Cb":                   round(r["Cb"], 4),
-        "Flotation Factor":     round(r["flotation_factor"], 4),
-        "Status":               r["status"],
+    r = compute_buoyancy(float(m), float(L), float(B), float(D),
+                         float(rho_ship), float(KG), float(props["rho"]))
+    rows.append({
+        "Water Environment":  name.split("(")[0].strip(),
+        "ρ_w (kg/m³)":       props["rho"],
+        "Draft T (m)":        round(r["T_actual"], 3),
+        "Freeboard (m)":      round(r["freeboard"], 3),
+        "Buoyant Force (kN)": round(r["F_buoyancy"]/1000, 2),
+        "Displacement (t)":   round(r["displacement_t"], 1),
+        "GM (m)":             round(r["GM"], 3),
+        "Cb":                 round(r["Cb"], 4),
+        "Flotation Factor":   round(r["flotation_fac"], 4),
+        "Status":             r["status"],
     })
-df = pd.DataFrame(table_rows)
-st.dataframe(df, use_container_width=True, hide_index=True)
+st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 st.divider()
 
@@ -702,95 +584,70 @@ st.divider()
 # THEORY EXPANDER
 # ==============================================================================
 with st.expander("📚 Theory & Equations — Archimedes' Principle & GM Stability"):
-    st.markdown("""
-    ### Archimedes' Principle
-    A body immersed in fluid experiences an upward buoyant force equal to the weight of fluid displaced:
+    st.markdown(r"""
+### Archimedes' Principle
+$$F_b = \rho_w \cdot g \cdot V_{submerged}$$
 
-    $$F_b = \\rho_w \\cdot g \\cdot V_{submerged}$$
+Floating condition requires: $\bar{\rho}_{ship} \leq \rho_w$
 
-    **Floating condition:** $F_b \\geq F_g = m \\cdot g$, which requires:
+---
+### Draft — Box Hull
+$$T = \frac{V_{submerged}}{L \cdot B} \qquad \text{Freeboard} = D - T$$
 
-    $$\\frac{m}{V_{total}} \\leq \\rho_w \\quad \\Leftrightarrow \\quad \\bar{\\rho}_{ship} \\leq \\rho_w$$
+---
+### Block Coefficient
+$$C_b = \frac{V_{submerged}}{L \cdot B \cdot T}$$
+Typical range: 0.50–0.65 (fast vessels) → 0.75–0.85 (bulk carriers)
 
-    ---
-    ### Draft Calculation (Box Hull)
+---
+### GM Stability Chain
 
-    For a rectangular (box) hull of length $L$, beam $B$:
+| Symbol | Meaning | Formula |
+|--------|---------|---------|
+| **KB** | Centre of Buoyancy above Keel | $T/2$ |
+| **BM** | Metacentric Radius | $B^2 / (12T)$ |
+| **KM** | Metacentre above Keel | $KB + BM$ |
+| **GM** | Metacentric Height | $KM - KG$ |
 
-    $$T = \\frac{V_{submerged}}{L \\cdot B}$$
+- $GM > 0.15$ m → ✅ Stable
+- $0 < GM \leq 0.15$ m → ⚠️ Tender (marginally stable)
+- $GM \leq 0$ m → ❌ Unstable (capsizes)
 
-    **Freeboard** $= D - T$ (must remain positive to prevent flooding)
+> BM increases with $B^2$ — doubling the beam quadruples metacentric radius.
 
-    ---
-    ### Block Coefficient
-
-    $$C_b = \\frac{V_{submerged}}{L \\cdot B \\cdot T}$$
-
-    Typical values: 0.50–0.65 (fast vessels), 0.75–0.85 (bulk carriers/tankers)
-
-    ---
-    ### GM Stability — Box Hull Approximation
-
-    | Symbol | Name | Formula |
-    |--------|------|---------|
-    | **K**  | Keel | Reference datum (0 m) |
-    | **KB** | Centre of Buoyancy above Keel | $KB = T/2$ |
-    | **BM** | Metacentric Radius | $BM = B^2 / (12T)$ |
-    | **KM** | Metacentre above Keel | $KM = KB + BM$ |
-    | **KG** | Centre of Gravity above Keel | Input parameter |
-    | **GM** | Metacentric Height | $GM = KM - KG$ |
-
-    **Stability criteria:**
-    - $GM > 0.15$ m → ✅ Stable (vessel returns upright after heeling)
-    - $0 < GM \\leq 0.15$ m → ⚠️ Marginally stable (tender ship)
-    - $GM \\leq 0$ m → ❌ Unstable (vessel will capsize)
-
-    > *Note: BM increases with beam squared — wider ships are inherently more stable.*
-
-    ---
-    ### Effect of Water Density on Buoyancy
-
-    In denser water (higher $\\rho_w$), the same ship floats **higher** (reduced draft):
-
-    $$T \\propto \\frac{1}{\\rho_w}$$
-
-    A ship moving from freshwater ($\\rho = 1000$) to seawater ($\\rho = 1025$) rises approximately **2.4%** of its draft — this is accounted for by the **Plimsoll Line** on real vessels.
-    """)
+---
+### Effect of Water Density on Draft
+$$T \propto \frac{1}{\rho_w}$$
+Moving from freshwater (1000) to seawater (1025) reduces draft by ~2.4% — the basis of the **Plimsoll Line**.
+""")
 
 # ==============================================================================
-# ACADEMIC INTEGRITY — SUBMISSION FINGERPRINT
+# SUBMISSION FINGERPRINT
 # ==============================================================================
 with st.expander("🔐 Academic Integrity — Submission Verification"):
-    if student_id.strip():
-        inputs_dict  = {"L": L, "B": B, "D": D, "m": m, "rho_ship": rho_ship_val, "KG": KG, "rho_water": float(rho_water)}
-        results_dict = {k: v for k, v in res.items() if isinstance(v, (int, float))}
-        sub_hash = result_hash(student_id, inputs_dict, results_dict)
-
-        st.markdown(f"""
-        <div class='integrity-box'>
-        <b>📋 Submission Verification Details</b><br><br>
+    if student_id.strip() and gen_params:
+        inputs_d  = {"L":L,"B":B,"D":D,"m":m,"rho_ship":rho_ship,"KG":KG,"rho_water":rho_water}
+        results_d = {k:v for k,v in res.items() if isinstance(v,(int,float))}
+        r_hash    = result_fingerprint(student_id, inputs_d, results_d)
+        st.markdown(f"""<div class='integrity-box'>
+        <b>📋 Submission Verification</b><br><br>
         Student ID: <code>{student_id}</code><br>
-        Parameter Hash: <code>{gen_params['integrity_hash'] if gen_params else 'N/A'}</code><br>
-        Result Fingerprint: <code>{sub_hash}</code><br><br>
-        Water Environment: <b>{water_selection}</b><br>
-        Ship: L={L}m, B={B}m, D={D}m, m={m:,.0f}kg, KG={KG}m<br>
-        Material: {material_name} ({rho_ship_val:.0f} kg/m³)<br><br>
-        <b>Include both hash codes in your report submission header.</b><br>
-        <small>Your marker can verify these hashes in under 60 seconds.</small>
-        </div>
-        """, unsafe_allow_html=True)
+        Parameter Hash: <code>{gen_params['param_hash']}</code><br>
+        Result Fingerprint: <code>{r_hash}</code><br><br>
+        Water: <b>{water_sel}</b> | Ship: L={L}m, B={B}m, D={D}m<br>
+        Mass: {m:,.0f} kg | KG: {KG} m | Material: {mat_name}<br><br>
+        <b>Include both hash codes in your report submission header.</b>
+        </div>""", unsafe_allow_html=True)
     else:
-        st.warning("Enter your Student ID in the sidebar to generate a submission fingerprint.")
+        st.info("Enter your Student ID in the sidebar to generate a submission fingerprint.")
 
 # ==============================================================================
 # FOOTER
 # ==============================================================================
 st.divider()
-st.markdown("""
-<div style='text-align:center; color:#555; font-size:0.8em;'>
-⚓ Ship Buoyancy & Stability Simulator v4.0 &nbsp;|&nbsp;
+st.markdown("""<div style='text-align:center;color:#555;font-size:0.8em;'>
+⚓ Ship Buoyancy & Stability Simulator v4.1 &nbsp;|&nbsp;
 Naval Fluid Mechanics — Educational Tool &nbsp;|&nbsp;
 Swinburne University of Technology &nbsp;|&nbsp;
 <i>Box-hull approximation — for educational purposes</i>
-</div>
-""", unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
