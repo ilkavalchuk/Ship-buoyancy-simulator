@@ -3,7 +3,7 @@
 **An interactive web-based educational tool for Naval Fluid Mechanics**  
 *Developed for engineering education research — Swinburne University of Technology*
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://your-app-url.streamlit.app)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://shipbuoysim.streamlit.app/)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
@@ -80,7 +80,7 @@ Click the **Streamlit badge** at the top of this page — no installation requir
 ### Run Locally
 ```bash
 # 1. Clone the repository
-git clone https://github.com/YOUR_USERNAME/ship-buoyancy-simulator.git
+git clone https://github.com/ilkavalchuk/ship-buoyancy-simulator.git
 cd ship-buoyancy-simulator
 
 # 2. Install dependencies
